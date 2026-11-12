@@ -1,0 +1,6 @@
+﻿@namespace AgGrid.Blazor
+
+<CascadingValue Name="@nameof(GridOptions.ColumnDefinitions)" Value="@_columnDefinitions"
+    ><CascadingValue Name="@nameof(GridOptions.RowData)" Value="@_rowData"
+        >@ChildContent</CascadingValue></CascadingValue>
+<div id="@_id" @ref="_gridDiv" style="height: @(HeightStyle); width: @(WidthStyle); @(Style)" class="@Class"></div>

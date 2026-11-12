@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <!--
+    AgGrid.Blazor (vendored)
+    원본: https://github.com/ebekker/blazor-ag-grid -> https://github.com/glazkovalex/blazor-ag-grid (MIT, v0.9.0)
+    포털 마이그레이션용으로 소스를 가져와 다음을 수정함:
+      - net5.0 -> net10.0 (Blazor Server 대상)
+      - AG Grid v33 API 대응 (agGrid.createGrid, gridApi 통합, setGridOption, getRowId 등)
+      - Blazor Server 에서 불가능한 동기 JS->.NET 호출 제거
+      - JsonExtensionData(AdditionalOptions) 로 미정의 옵션 전달, "fn:" 접두사로 JS 함수 참조 지원
+      - RowData 파라미터 변경 시 자동 반영, RowClicked/RowDoubleClicked 이벤트 추가
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>AgGrid.Blazor</RootNamespace>
+    <Version>0.9.0-portal.1</Version>
+    <NoWarn>$(NoWarn);CS1591;CS8632</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+</Project>
