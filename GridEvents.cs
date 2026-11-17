@@ -59,6 +59,14 @@ namespace AgGrid.Blazor
         public Action<CellEvent> CellDoubleClicked { set => Set(value); }
         public Action<RowEvent> RowClicked { set => Set(value); }
         public Action<RowEvent> RowDoubleClicked { set => Set(value); }
+        /// <summary>
+        /// portal: 그리드 상태(getState)가 바뀌었을 때 - 그리드 상태 보관용 (Vue use-grid-cache 의 gridCacheEvents)
+        ///   sortChanged / filterChanged / columnMoved·Visible·Pinned·Resized / paginationChanged(페이지·페이지 크기)
+        ///   - 복원(initialState, 서버 행 모델의 페이지 이동)이 끝나기 전 변경은 제외
+        ///   - flex·초기화에 따른 컬럼 너비 변경, 끌기 중간(finished=false)은 제외
+        ///   - 연달아 바뀌면 300ms 뒤 한 번만
+        /// </summary>
+        public Action StateChanged { set => Set(value); }
     }
 
     /// <summary>

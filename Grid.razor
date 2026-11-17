@@ -4,3 +4,14 @@
     ><CascadingValue Name="@nameof(GridOptions.RowData)" Value="@_rowData"
         >@ChildContent</CascadingValue></CascadingValue>
 <div id="@_id" @ref="_gridDiv" style="height: @(HeightStyle); width: @(WidthStyle); @(Style)" class="@Class"></div>
+@* portal: 머리글 컴포넌트(ColumnDefinition.HeaderComponent, RenderFragment)를 실제 Blazor 로 렌더하는 숨은 영역.
+   AG Grid 머리글(BlazorAgGrid.TemplateHeader)이 만들어질 때 안쪽 div 를 머리글로 옮기고, 없어질 때 되돌린다. *@
+@if (_headerTemplates.Count > 0)
+{
+    <div data-ag-header-host="@_id" style="display:none">
+        @foreach (var h in _headerTemplates)
+        {
+            <div data-ag-header-slot="@h.Key" @key="h.Key"><div data-ag-header="@h.Key" style="width:100%">@h.Column.HeaderComponent</div></div>
+        }
+    </div>
+}

@@ -25,6 +25,7 @@ window.BlazorAgGrid = {
         var cb = interopOptions.Callbacks;
         var ev = interopOptions.Events;
         var ds = op.datasource;
+        var ssds = op.serverSideDatasource;
 
         // Remember for subsequent API calls
         BlazorAgGrid.callbackMap[id] = interopOptions;
@@ -33,7 +34,13 @@ window.BlazorAgGrid = {
 
         if (cb) BlazorAgGrid.createGrid_wrapCallbacks(op, cb);
         if (ev) BlazorAgGrid.createGrid_wrapEvents(op, ev);
+        // portal: 그리드 상태 복원(onGridReady / onFirstDataRendered) + 상태 변경 알림 (wrapEvents 뒤에 이어 붙인다)
+        BlazorAgGrid.createGrid_trackState(op, (ev && ev.handlers) || {}, id);
+        // portal: 서버 렌더 셀(PortalGrid.renderers.html) - 행 값이 바뀌면 그 행의 템플릿 셀을 다시 렌더
+        BlazorAgGrid.createGrid_htmlCells(op);
         if (ds) BlazorAgGrid.createGrid_wrapDatasource(op, ds);
+        // portal: Server-Side Row Model (Enterprise) 데이터 소스 - .NET IGridDatasource 를 그대로 사용
+        if (ssds) op.serverSideDatasource = BlazorAgGrid.util_wrapServerSideDatasource(ssds);
 
         if (configScript) {
             var fn = BlazorAgGrid.util_resolvePath(configScript);
@@ -54,6 +61,8 @@ window.BlazorAgGrid = {
         if (api && !api.isDestroyed()) api.destroy();
         delete BlazorAgGrid.apiMap[id];
         delete BlazorAgGrid.callbackMap[id];
+        delete BlazorAgGrid._gridCacheState[id];
+        for (var hk in BlazorAgGrid._headerNodes) if (hk.indexOf(id + '|') === 0) delete BlazorAgGrid._headerNodes[hk];
     },
 
     // UMD 번들은 일반적으로 모든 모듈이 등록되어 있으나, 안전하게 한 번 더 등록한다.
@@ -105,7 +114,7 @@ window.BlazorAgGrid = {
 
         // "fn:" 함수 참조 해석 (rowData 는 제외)
         for (var k in op) {
-            if (k === 'rowData' || k === 'columnDefs' || k === 'defaultColDef' || k === 'datasource') continue;
+            if (k === 'rowData' || k === 'columnDefs' || k === 'defaultColDef' || k === 'datasource' || k === 'serverSideDatasource') continue;
             op[k] = BlazorAgGrid.util_resolveFns(op[k]);
         }
     },
@@ -223,6 +232,176 @@ window.BlazorAgGrid = {
         }
     },
 
+    // portal: 그리드 상태 복원/변경 추적 (Vue composables/use-grid-cache.ts)
+    //  op.portalGridCache = { columnState, filter, page, pageSize } (.NET GusGridCache.Apply 가 넣는다)
+    //  1) onGridReady        : 컬럼(순서/너비/숨김/고정)·정렬·필터·페이지 크기 복원 + 목표 페이지 확보 (savedTargetPage)
+    //                          적용 직후 복원 중 표시 해제 (restoringGrid = false)
+    //                          서버 행 모델도 첫 조회 전에 적용되어 첫 조회부터 정렬/필터가 들어간다
+    //  2) onFirstDataRendered: 목표 페이지로 이동 (전체 페이지 수를 넘으면 마지막 페이지), 이동 후 isPageRestored
+    //  3) StateChanged 핸들러가 있으면 정렬/필터/컬럼/페이지가 바뀔 때 알린다 (Vue saveGridCache)
+    //     - 복원 중(restoringGrid)에는 알리지 않음
+    //     - paginationChanged: 페이지 복원 전, 표시 행 0건, 페이지 번호·크기가 그대로면 알리지 않음
+    //     - 페이지 복원 전에 보관하면 page 는 목표 페이지로 (gridCache_get)
+    //     - flex/초기화에 따른 컬럼 너비 변경, 끌기 중간(finished=false) 제외, 연달아 바뀌면 300ms 뒤 한 번
+    _gridCacheState: {},
+
+    createGrid_trackState: function (op, h, id) {
+        var cache = op.portalGridCache || null;
+        delete op.portalGridCache;   // AG Grid 옵션이 아니므로 넘기지 않는다
+        var track = !!h.StateChanged;
+        if (!cache && !track) return;
+
+        var targetPage = (cache && typeof cache.page === 'number' && cache.page > 0) ? cache.page : 0;
+        var gs = BlazorAgGrid._gridCacheState[id] = {
+            restoring: true,              // Vue restoringGrid
+            savedTargetPage: targetPage,  // Vue savedTargetPage
+            pageRestored: targetPage === 0 // Vue isPageRestored
+        };
+        var timer = null, last = null;
+        var chain = function (name, fn) {
+            var prev = op[name];
+            op[name] = function (e) { fn(e); if (prev) prev(e); };
+        };
+
+        // 1) 그리드 준비: 컬럼/정렬/필터/페이지 크기 → 복원 중 해제
+        chain('onGridReady', function (e) {
+            if (cache) BlazorAgGrid.gridCache_apply(e.api, cache);
+            // 적용으로 생기는 이벤트(필터/정렬/페이지 크기 변경)가 지나간 뒤 해제
+            setTimeout(function () {
+                if (e.api.isDestroyed()) return;
+                gs.restoring = false;
+                clearTimeout(timer);
+                last = [e.api.paginationGetCurrentPage(), e.api.paginationGetPageSize()];
+            }, 0);
+        });
+        // 2) 첫 데이터: 목표 페이지로 이동
+        chain('onFirstDataRendered', function (e) {
+            if (gs.pageRestored || gs.savedTargetPage <= 0) { gs.pageRestored = true; return; }
+            // 페이지 크기 적용이 먼저 끝나도록 다음 틱에 이동 (Vue nextTick)
+            setTimeout(function () {
+                if (e.api.isDestroyed()) return;
+                var total = e.api.paginationGetTotalPages();
+                var safePage = total > 0 ? Math.min(gs.savedTargetPage, total - 1) : gs.savedTargetPage;
+                e.api.paginationGoToPage(safePage);
+                gs.pageRestored = true;
+            }, 0);
+        });
+        if (!track) return;
+
+        var fire = function (api) {
+            clearTimeout(timer);
+            timer = setTimeout(function () {
+                if (api.isDestroyed()) return;
+                h.StateChanged.jsRef.invokeMethodAsync("Invoke").catch(function () { /* 화면이 닫힌 뒤 */ });
+            }, 300);
+        };
+        var ignored = { flex: 1, gridInitializing: 1 };
+        var onChange = function (e) {
+            if (gs.restoring || ignored[e.source] || e.finished === false) return;
+            fire(e.api);
+        };
+        ['onSortChanged', 'onFilterChanged', 'onColumnMoved', 'onColumnVisible', 'onColumnPinned', 'onColumnResized']
+            .forEach(function (n) { chain(n, onChange); });
+        chain('onPaginationChanged', function (e) {
+            if (gs.restoring) return;
+            if (!gs.pageRestored) return;                         // 0페이지 덮어쓰기 방지
+            if (e.api.getDisplayedRowCount() === 0) return;       // 로딩 중/0건
+            var cur = [e.api.paginationGetCurrentPage(), e.api.paginationGetPageSize()];
+            if (last && cur[0] === last[0] && cur[1] === last[1]) return;
+            last = cur;
+            fire(e.api);
+        });
+    },
+
+    // portal: 화면 상태가 바뀐 템플릿 컬럼(IGridColumnRefresh)의 셀을 다시 렌더 (서버 렌더 HTML 캐시를 지우고 refreshCells)
+    refreshTemplateCells: function (callbackId, colIds) {
+        var api = BlazorAgGrid.apiMap[callbackId];
+        if (!api || api.isDestroyed() || !colIds || !colIds.length) return;
+        api.forEachNode(function (n) {
+            if (n.data && n.data.__html) colIds.forEach(function (c) { delete n.data.__html[c]; });
+        });
+        api.refreshCells({ columns: colIds, force: true });
+    },
+
+    // portal: Blazor 로 렌더한 머리글 (ColumnDefinition.HeaderComponent)
+    //  Grid.razor 의 숨은 영역 [data-ag-header-host=gridId] > [data-ag-header-slot=key] > [data-ag-header=key] 에
+    //  Blazor 가 렌더한 내용을 머리글이 만들어질 때 옮겨 붙이고, 머리글이 없어질 때 제자리로 되돌린다.
+    //  (Blazor 는 옮긴 요소를 그대로 갱신하고, 이벤트도 문서 단위로 받으므로 @onclick 등이 동작한다)
+    //  headerComponentParams: { gridId, key }
+    _headerNodes: {},
+    TemplateHeader: (function () {
+        function TemplateHeader() { }
+        var slotOf = function (gridId, key) {
+            return document.querySelector('[data-ag-header-host="' + gridId + '"] > [data-ag-header-slot="' + key + '"]');
+        };
+        TemplateHeader.prototype.init = function (params) {
+            this.params = params;
+            this.gui = document.createElement('div');
+            this.gui.className = 'ag-template-header';
+            this.gui.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;';
+            var id = params.gridId + '|' + params.key;
+            var node = BlazorAgGrid._headerNodes[id];
+            if (!node || !node.isConnected) {
+                var slot = slotOf(params.gridId, params.key);
+                node = slot ? slot.querySelector('[data-ag-header="' + params.key + '"]') : null;
+                BlazorAgGrid._headerNodes[id] = node;
+            }
+            this.node = node;
+            if (node) this.gui.appendChild(node);
+        };
+        TemplateHeader.prototype.getGui = function () { return this.gui; };
+        TemplateHeader.prototype.refresh = function () { return true; };
+        TemplateHeader.prototype.destroy = function () {
+            // 같은 머리글을 다시 만들 수 있도록 내용은 숨은 영역으로 되돌린다
+            var slot = slotOf(this.params.gridId, this.params.key);
+            if (this.node && slot && this.node.parentNode === this.gui) slot.appendChild(this.node);
+        };
+        return TemplateHeader;
+    })(),
+
+    // portal: 서버 렌더 셀(C# GusTemplateColumn → PortalGrid.renderers.html)
+    //  셀 HTML 은 row.__html[colId] 에 둔다. 행 값이 바뀌면(setDataValue 등) 그 HTML 을 버리고
+    //  같은 행의 템플릿 셀을 다시 그리게 해 서버에서 새로 렌더한다 (다른 필드에 따라 바뀌는 셀도 맞게)
+    createGrid_htmlCells: function (op) {
+        var isHtml = function (c) { return !!(c && c.cellRenderer && c.cellRenderer.isPortalHtmlCell); };
+        var any = function (cols) {
+            return (cols || []).some(function (c) { return isHtml(c) || any(c.children); });
+        };
+        if (!any(op.columnDefs) && !isHtml(op.defaultColDef)) return;
+        var prev = op.onCellValueChanged;
+        op.onCellValueChanged = function (e) {
+            if (e.data && e.data.__html) delete e.data.__html;
+            var cols = (e.api.getColumns() || []).filter(function (c) { return isHtml(c.getColDef()); });
+            if (cols.length && e.node) e.api.refreshCells({ rowNodes: [e.node], columns: cols, force: true });
+            if (prev) prev(e);
+        };
+    },
+
+    // Vue applyGridCache: 컬럼 상태(정렬 포함) → 필터 → 페이지 크기
+    gridCache_apply: function (api, cache) {
+        if (cache.columnState && cache.columnState.length) {
+            api.applyColumnState({ state: cache.columnState, applyOrder: !!cache.applyOrder, defaultState: { sort: null } });
+        }
+        if (cache.filter) api.setFilterModel(cache.filter);
+        if (cache.pageSize) api.setGridOption('paginationPageSize', cache.pageSize);
+    },
+
+    // Vue gridCacheInfo: 보관할 상태 (컬럼 상태는 순서/너비/flex/숨김/고정/정렬 포함)
+    gridCache_get: function (callbackId) {
+        var api = BlazorAgGrid.apiMap[callbackId];
+        if (!api || api.isDestroyed()) return null;
+        var gs = BlazorAgGrid._gridCacheState[callbackId];
+        // 아직 페이지 복원 전이면 보관된 목표 페이지를 유지 (Vue saveGridCache)
+        var page = (gs && !gs.pageRestored && gs.savedTargetPage > 0) ? gs.savedTargetPage : api.paginationGetCurrentPage();
+        return {
+            columnState: api.getColumnState(),
+            filter: api.getFilterModel(),
+            page: page,
+            pageSize: api.paginationGetPageSize(),
+            applyOrder: true
+        };
+    },
+
     // ---------------------------------------------------------------------
     // API calls
     // ---------------------------------------------------------------------
@@ -287,13 +466,20 @@ window.BlazorAgGrid = {
 
     datasource_successCallback: function (callbackId, rowsThisBlock, lastRow) {
         var getRowsParams = BlazorAgGrid.callbackMap[callbackId];
-        getRowsParams.successCallback(rowsThisBlock, lastRow);
+        if (!getRowsParams) return;
+        // portal: Server-Side Row Model 은 params.success({ rowData, rowCount })
+        if (typeof getRowsParams.success === 'function')
+            getRowsParams.success({ rowData: rowsThisBlock, rowCount: lastRow === null ? undefined : lastRow });
+        else
+            getRowsParams.successCallback(rowsThisBlock, lastRow);
         delete BlazorAgGrid.callbackMap[callbackId];
     },
 
     datasource_failCallback: function (callbackId) {
         var getRowsParams = BlazorAgGrid.callbackMap[callbackId];
-        getRowsParams.failCallback();
+        if (!getRowsParams) return;
+        if (typeof getRowsParams.fail === 'function') getRowsParams.fail();
+        else getRowsParams.failCallback();
         delete BlazorAgGrid.callbackMap[callbackId];
     },
 
@@ -311,6 +497,30 @@ window.BlazorAgGrid = {
                     sortModel: getRowsParams.sortModel,
                     filterModel: getRowsParams.filterModel,
                     callbackId: callbackId
+                });
+            },
+            destroy: function () {
+                ds.invokeMethodAsync('Destroy');
+            }
+        };
+    },
+
+    // portal: Server-Side Row Model 데이터 소스. 요청(request)을 Infinite 와 같은 모양으로 .NET GetRows 에 넘긴다
+    util_wrapServerSideDatasource: function (ds) {
+        return {
+            getRows: function (params) {
+                var callbackId = BlazorAgGrid.util_genId();
+                BlazorAgGrid.callbackMap[callbackId] = params;
+                var r = params.request || {};
+                ds.invokeMethodAsync('GetRows', {
+                    startRow: r.startRow,
+                    endRow: r.endRow,
+                    sortModel: r.sortModel,
+                    filterModel: r.filterModel,
+                    callbackId: callbackId
+                }).catch(function () {
+                    var p = BlazorAgGrid.callbackMap[callbackId];
+                    if (p) { p.fail(); delete BlazorAgGrid.callbackMap[callbackId]; }
                 });
             },
             destroy: function () {

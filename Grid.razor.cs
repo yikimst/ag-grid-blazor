@@ -25,6 +25,9 @@ namespace AgGrid.Blazor
         private readonly string _id = "aggrid-" + Guid.NewGuid().ToString("N");
         private bool _isCreated;
         private object _lastRowData;
+        private List<ColumnDefinition> _createdColumns;
+        // portal: 머리글 템플릿 컬럼 (키 = colId / field / 순번)
+        private List<(string Key, ColumnDefinition Column)> _headerTemplates = new();
 
         [Parameter] public RenderFragment ChildContent { get; set; }
         [Parameter] public string HeightStyle { get; set; } = "500px";
@@ -63,6 +66,25 @@ namespace AgGrid.Blazor
         /// <summary>v31 부터 Column API 는 Grid API 로 통합되었다. 하위호환을 위해 유지.</summary>
         public GridColumnApi ColumnApi { get; private set; }
 
+        protected override void OnParametersSet()
+        {
+            // portal: 머리글 템플릿 (Blazor 로 렌더해 AG Grid 머리글로 옮긴다)
+            _headerTemplates = new();
+            var i = 0;
+            CollectHeaderTemplates(Options?.ColumnDefinitions, ref i);
+        }
+
+        private void CollectHeaderTemplates(IEnumerable<ColumnDefinition> columns, ref int i)
+        {
+            if (columns == null) return;
+            foreach (var c in columns)
+            {
+                CollectHeaderTemplates(c.Children, ref i);
+                if (c.HeaderComponent != null)
+                    _headerTemplates.Add(("h" + (i++) + "_" + (c.ColId ?? c.Field ?? ""), c));
+            }
+        }
+
         protected override async Task OnParametersSetAsync()
         {
             if (_isCreated && !ReferenceEquals(_lastRowData, RowData))
@@ -74,6 +96,22 @@ namespace AgGrid.Blazor
 
         protected override async Task OnAfterRenderAsync(bool firstRender)
         {
+            // portal: 화면 상태에 따라 바뀌는 셀(IGridColumnRefresh)은 상태가 바뀌었으면 다시 렌더
+            if (!firstRender && _isCreated && _createdColumns != null)
+            {
+                var changed = new List<string>();
+                GridColumnLifecycle.EachColumn(_createdColumns, c =>
+                {
+                    if (c is IGridColumnRefresh r && r.CheckStateChanged())
+                        changed.Add(c.ColId ?? c.Field);
+                });
+                if (changed.Count > 0)
+                {
+                    try { await JS.InvokeVoidAsync("BlazorAgGrid.refreshTemplateCells", _id, changed); }
+                    catch (JSDisconnectedException) { }
+                }
+            }
+
             if (firstRender && !_isCreated)
             {
                 Api = new GridApi(JS, _id);
@@ -101,6 +139,17 @@ namespace AgGrid.Blazor
                 _lastRowData = RowData;
             }
 
+            // portal: 머리글 템플릿 → BlazorAgGrid.TemplateHeader (숨은 영역에서 렌더한 Blazor 내용을 옮겨 붙인다)
+            foreach (var h in _headerTemplates)
+            {
+                h.Column.HeaderComponentName = "fn:BlazorAgGrid.TemplateHeader";
+                h.Column.HeaderComponentParams = new { gridId = _id, key = h.Key };
+            }
+
+            // portal: 컬럼에 그리드 생성 알림 (서버 렌더 셀의 .NET 참조 만들기 등)
+            _createdColumns = Options.ColumnDefinitions?.ToList();
+            GridColumnLifecycle.Each(_createdColumns, c => c.OnGridCreating());
+
             // Execute any needed adjustments or tranformations
             // before handing off the options for JS interop
             Options.FirePrepareForInterop(JS);
@@ -121,6 +170,9 @@ namespace AgGrid.Blazor
         {
             if (!_isCreated)
                 return;
+            // portal: 컬럼이 가진 .NET 참조(서버 렌더 셀 등) 정리
+            GridColumnLifecycle.Each(_createdColumns, c => c.OnGridDestroyed());
+            _createdColumns = null;
             try
             {
                 await JS.InvokeVoidAsync("BlazorAgGrid.destroyGrid", _id);
@@ -134,5 +186,6 @@ namespace AgGrid.Blazor
                 Console.WriteLine("WARNING: AgGrid clean up failure: " + ex.Message);
             }
         }
+
     }
 }

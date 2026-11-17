@@ -34,9 +34,21 @@ namespace AgGrid.Blazor
         public bool? CheckboxSelection { get; set; }
 
         /// <summary>
-        /// Custom header component to use for this column. https://www.ag-grid.com/documentation/javascript/component-header/#header-component
+        /// portal: 머리글 컴포넌트 = Blazor 컴포넌트/RenderFragment (Vue headerComponent).
+        ///   HeaderComponent = @&lt;GusGridAddRowHeader OnClick="OnAddRow" /&gt;
+        /// Grid 안의 숨은 영역에 실제 Blazor 로 렌더한 뒤 AG Grid 머리글 자리로 옮겨 붙인다
+        /// → @onclick, EventCallback, 상태에 따른 다시 그리기 등 Blazor 기능이 그대로 동작한다.
+        /// 지정하면 AG Grid 기본 머리글(이름/정렬/메뉴) 대신 이것만 표시한다.
+        /// https://www.ag-grid.com/documentation/javascript/component-header/#header-component
         /// </summary>
-        public string HeaderComponent { get; set; }
+        [JsonIgnore]
+        public Microsoft.AspNetCore.Components.RenderFragment HeaderComponent { get; set; }
+
+        /// <summary>
+        /// AG Grid headerComponent 이름 (JS 컴포넌트, "fn:전역.경로"). HeaderComponent(RenderFragment)가 있으면 Grid 가 채운다.
+        /// </summary>
+        [JsonPropertyName("headerComponent")]
+        public string HeaderComponentName { get; set; }
         /// <summary>
         /// Params to be passed to header component.
         /// </summary>
