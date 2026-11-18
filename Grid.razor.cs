@@ -26,6 +26,7 @@ namespace AgGrid.Blazor
         private bool _isCreated;
         private object _lastRowData;
         private List<ColumnDefinition> _createdColumns;
+        private List<IGridOptionsLifecycle> _createdLifecycles;
         // portal: 머리글 템플릿 컬럼 (키 = colId / field / 순번)
         private List<(string Key, ColumnDefinition Column)> _headerTemplates = new();
 
@@ -61,6 +62,12 @@ namespace AgGrid.Blazor
         [Inject] private IJSRuntime JS { get; set; }
 
         public string Id => _id;
+
+        /// <summary>
+        /// portal: 그리드 컴포넌트가 없어질 때 (화면 이동, @if 로 사라짐 등).
+        /// 그리드 참조를 받은 쪽(예: GusGridCache)이 등록한 핸들러를 스스로 정리할 수 있게 한다.
+        /// </summary>
+        public event Action<Grid> Disposed;
         public GridApi Api { get; private set; }
 
         /// <summary>v31 부터 Column API 는 Grid API 로 통합되었다. 하위호환을 위해 유지.</summary>
@@ -149,6 +156,9 @@ namespace AgGrid.Blazor
             // portal: 컬럼에 그리드 생성 알림 (서버 렌더 셀의 .NET 참조 만들기 등)
             _createdColumns = Options.ColumnDefinitions?.ToList();
             GridColumnLifecycle.Each(_createdColumns, c => c.OnGridCreating());
+            // portal: 옵션에 붙은 객체에 그리드 생성 알림 (서버 데이터 소스의 .NET 참조 만들기 등)
+            _createdLifecycles = Options.Lifecycles.ToList();
+            foreach (var l in _createdLifecycles) l.OnGridCreating(Options, JS);
 
             // Execute any needed adjustments or tranformations
             // before handing off the options for JS interop
@@ -168,6 +178,12 @@ namespace AgGrid.Blazor
 
         public async ValueTask DisposeAsync()
         {
+            // portal: 그리드 참조를 가진 쪽에 알림 (먼저 알려 핸들러 정리)
+            var disposed = Disposed;
+            Disposed = null;
+            try { disposed?.Invoke(this); }
+            catch (Exception ex) { Console.WriteLine("WARNING: AgGrid Disposed handler failure: " + ex.Message); }
+
             if (!_isCreated)
                 return;
             // portal: 컬럼이 가진 .NET 참조(서버 렌더 셀 등) 정리
@@ -185,6 +201,10 @@ namespace AgGrid.Blazor
             {
                 Console.WriteLine("WARNING: AgGrid clean up failure: " + ex.Message);
             }
+            // portal: 옵션에 붙은 객체 정리 (JS 그리드가 없어진 뒤: AG Grid 가 destroy 때 데이터 소스 Destroy 를 부르므로)
+            if (_createdLifecycles != null)
+                foreach (var l in _createdLifecycles) l.OnGridDestroyed();
+            _createdLifecycles = null;
         }
 
     }

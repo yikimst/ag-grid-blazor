@@ -22,6 +22,20 @@ namespace AgGrid.Blazor
         bool CheckStateChanged();
     }
 
+    /// <summary>
+    /// portal: 그리드 옵션에 붙어 그리드와 수명을 같이 하는 객체 (GridOptions.Lifecycles 에 넣는다).
+    /// 예: 서버 데이터 소스가 그리드를 만들 때 .NET 참조(DotNetObjectReference)를 만들어 옵션에 넣고, 그리드가 없어질 때 해제.
+    /// 같은 옵션으로 그리드를 다시 만들 수 있으므로(@if 로 숨겼다 보이기 등) 만들 때마다 Creating, 없어질 때마다 Destroyed 가 불린다.
+    /// 화면에서 Dispose 를 따로 부를 필요가 없다.
+    /// </summary>
+    public interface IGridOptionsLifecycle
+    {
+        /// <summary>그리드를 만들기 직전 (옵션을 JS 로 넘기기 전)</summary>
+        void OnGridCreating(GridOptions options, Microsoft.JSInterop.IJSRuntime js);
+        /// <summary>그리드 컴포넌트가 없어질 때</summary>
+        void OnGridDestroyed();
+    }
+
     internal static class GridColumnLifecycle
     {
         public static void EachColumn(IEnumerable<ColumnDefinition> columns, System.Action<ColumnDefinition> action)

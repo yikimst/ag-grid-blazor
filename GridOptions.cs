@@ -11,6 +11,10 @@ namespace AgGrid.Blazor
     /// </summary>
     public partial class GridOptions
     {
+        /// <summary>portal: 그리드와 수명을 같이 하는 객체 (IGridOptionsLifecycle, 예: 서버 데이터 소스)</summary>
+        [JsonIgnore]
+        public List<IGridOptionsLifecycle> Lifecycles { get; } = new List<IGridOptionsLifecycle>();
+
         public RowModelType? RowModelType { get; set; }
 
         // Selection
