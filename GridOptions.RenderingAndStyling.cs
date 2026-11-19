@@ -8,6 +8,7 @@ namespace AgGrid.Blazor
         /// Icons to use inside the grid instead of the grid's default icons.
         /// </summary>
         public object Icons { get; set; }
+
         /// <summary>
         /// Default Row Height in pixels.
         /// Default: 25

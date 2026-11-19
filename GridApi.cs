@@ -65,6 +65,24 @@ namespace AgGrid.Blazor
         }
 
         /// <summary>
+        /// portal: 바뀐 행만 반영 (AG Grid applyTransaction, 클라이언트 행 모델).
+        /// 스크롤 / 선택 / 정렬 / 필터가 유지된다. remove / update 는 GridOptions.RowIdField 로 행을 찾는다.
+        /// </summary>
+        /// <param name="add">추가할 행</param>
+        /// <param name="remove">삭제할 행 (RowIdField 값만 있으면 된다)</param>
+        /// <param name="update">바꿀 행 (같은 RowIdField 의 행을 이 데이터로 교체)</param>
+        /// <param name="addIndex">추가 위치 (null 이면 끝)</param>
+        public Task ApplyTransaction(IEnumerable<object> add = null, IEnumerable<object> remove = null, IEnumerable<object> update = null, int? addIndex = null)
+        {
+            var tx = new Dictionary<string, object>();
+            if (add != null) tx["add"] = add;
+            if (remove != null) tx["remove"] = remove;
+            if (update != null) tx["update"] = update;
+            if (addIndex is >= 0) tx["addIndex"] = addIndex.Value;
+            return CallApi("applyTransaction", tx);
+        }
+
+        /// <summary>
         /// Set new datasource for Infinite Row Model.
         /// </summary>
         /// <param name="datasource">New datasource</param>

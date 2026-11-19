@@ -178,8 +178,13 @@ window.BlazorAgGrid = {
             return arg === undefined ? ref.invokeMethodAsync("Invoke") : ref.invokeMethodAsync("Invoke", arg);
         };
 
-        if (h.CellClicked) {
-            gridOptions.onCellClicked = function (event) { invoke("CellClicked", BlazorAgGrid._cellEvent(event)); };
+        // portal: CellAction 은 셀 안의 [data-ptl-action] 요소를 눌렀을 때만 서버를 부른다 (CellClicked 는 모든 셀 클릭)
+        if (h.CellClicked || h.CellAction) {
+            gridOptions.onCellClicked = function (event) {
+                var ev = BlazorAgGrid._cellEvent(event);
+                if (h.CellClicked) invoke("CellClicked", ev);
+                if (h.CellAction && ev.action) invoke("CellAction", ev);
+            };
         }
         if (h.CellDoubleClicked) {
             gridOptions.onCellDoubleClicked = function (event) { invoke("CellDoubleClicked", BlazorAgGrid._cellEvent(event)); };

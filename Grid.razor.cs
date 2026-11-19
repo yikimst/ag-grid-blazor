@@ -1,5 +1,8 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Text.Json;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Components;
@@ -97,8 +100,87 @@ namespace AgGrid.Blazor
             if (_isCreated && !ReferenceEquals(_lastRowData, RowData))
             {
                 _lastRowData = RowData;
+                ObserveRowData(RowData);
                 await Api.SetRowData(RowData ?? Enumerable.Empty<object>());
             }
+        }
+
+        // ------------------------------------------------------------------ portal: ObservableCollection 행 (Vue ref 처럼)
+        //   RowData 가 INotifyCollectionChanged(ObservableCollection 등)면 목록 변경을 그리드에 바로 반영한다.
+        //     _rows.Add(row) / _rows.Remove(row) / _rows[i] = row  → applyTransaction (바뀐 행만, 스크롤/선택/정렬/필터 유지)
+        //     Clear / Move / 그 밖의 변경                          → 전체 다시 넣기 (setRowData)
+        //   삭제 / 교체는 RowIdField 로 행을 찾는다. RowIdField 가 없으면 전체 다시 넣기.
+        //   항목 안의 속성만 바꾼 것은 알 수 없으므로 _rows[i] = row 처럼 그 항목을 다시 넣는다.
+
+        private INotifyCollectionChanged _observed;
+
+        private void ObserveRowData(IEnumerable<object> rows)
+        {
+            var next = rows as INotifyCollectionChanged;
+            if (ReferenceEquals(_observed, next)) return;
+            if (_observed != null) _observed.CollectionChanged -= OnRowDataChanged;
+            _observed = next;
+            if (_observed != null) _observed.CollectionChanged += OnRowDataChanged;
+        }
+
+        private void OnRowDataChanged(object sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (!_isCreated || !ReferenceEquals(sender, _observed)) return;
+            // 변경 내용을 지금 복사해 둔다 (이벤트 뒤에 목록이 또 바뀔 수 있음)
+            var newItems = e.NewItems?.Cast<object>().ToList();
+            var oldItems = e.OldItems?.Cast<object>().ToList();
+            var snapshot = ((IEnumerable)sender).Cast<object>().ToList();
+            _ = InvokeAsync(() => ApplyRowDataChangeAsync(e.Action, newItems, oldItems, e.NewStartingIndex, snapshot));
+        }
+
+        private async Task ApplyRowDataChangeAsync(NotifyCollectionChangedAction action, List<object> newItems, List<object> oldItems, int newIndex, List<object> snapshot)
+        {
+            try
+            {
+                var idField = Options?.RowIdField;
+                switch (action)
+                {
+                    case NotifyCollectionChangedAction.Add when newItems != null:
+                        await Api.ApplyTransaction(add: newItems, addIndex: newIndex);
+                        return;
+                    case NotifyCollectionChangedAction.Remove when oldItems != null && !string.IsNullOrEmpty(idField):
+                        await Api.ApplyTransaction(remove: oldItems);
+                        return;
+                    case NotifyCollectionChangedAction.Replace when newItems != null && oldItems != null && !string.IsNullOrEmpty(idField):
+                    {
+                        // 같은 ID 면 update (선택 유지), 다른 ID 면 remove + add
+                        var oldIds = new HashSet<string>(oldItems.Select(o => RowIdOf(o, idField)));
+                        var newIds = new HashSet<string>(newItems.Select(o => RowIdOf(o, idField)));
+                        var update = newItems.Where(o => oldIds.Contains(RowIdOf(o, idField))).ToList();
+                        var add = newItems.Where(o => !oldIds.Contains(RowIdOf(o, idField))).ToList();
+                        var remove = oldItems.Where(o => !newIds.Contains(RowIdOf(o, idField))).ToList();
+                        await Api.ApplyTransaction(add: add.Count > 0 ? add : null, remove: remove.Count > 0 ? remove : null,
+                            update: update.Count > 0 ? update : null, addIndex: add.Count > 0 ? newIndex : null);
+                        return;
+                    }
+                    default:
+                        await Api.SetRowData(snapshot);
+                        return;
+                }
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (Exception ex)
+            {
+                Console.WriteLine("WARNING: AgGrid row data change failed: " + ex.Message);
+            }
+        }
+
+        // JS 로 보낼 때와 같은 직렬화(JSON camelCase)로 행 ID 필드 값
+        private static string RowIdOf(object row, string idField)
+        {
+            if (row == null) return "";
+            var el = JsonSerializer.SerializeToElement(row, row.GetType(), JsonSerializerOptions.Web);
+            if (el.ValueKind != JsonValueKind.Object) return "";
+            foreach (var p in el.EnumerateObject())
+                if (p.NameEquals(idField))
+                    return p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() : p.Value.GetRawText();
+            return "";
         }
 
         protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -125,6 +207,14 @@ namespace AgGrid.Blazor
                 ColumnApi = new GridColumnApi(JS, _id);
                 await CreateGrid();
                 _isCreated = true;
+                // portal: 그리드를 만드는 동안(JS 호출을 기다리는 사이) RowData 가 바뀌었으면 지금 넣는다.
+                //   (그 사이의 OnParametersSetAsync 는 _isCreated 가 false 라 건너뛰므로, 비동기로 받은 행이 빠지고 Loading 만 남던 문제)
+                if (!ReferenceEquals(_lastRowData, RowData))
+                {
+                    _lastRowData = RowData;
+                    ObserveRowData(RowData);
+                    await Api.SetRowData(RowData ?? Enumerable.Empty<object>());
+                }
                 if (OnGridReady.HasDelegate)
                     await OnGridReady.InvokeAsync(this);
             }
@@ -144,6 +234,7 @@ namespace AgGrid.Blazor
             {
                 Options.RowData = RowData;
                 _lastRowData = RowData;
+                ObserveRowData(RowData);
             }
 
             // portal: 머리글 템플릿 → BlazorAgGrid.TemplateHeader (숨은 영역에서 렌더한 Blazor 내용을 옮겨 붙인다)
@@ -181,6 +272,7 @@ namespace AgGrid.Blazor
             // portal: 그리드 참조를 가진 쪽에 알림 (먼저 알려 핸들러 정리)
             var disposed = Disposed;
             Disposed = null;
+            ObserveRowData(null);   // portal: ObservableCollection 구독 해제
             try { disposed?.Invoke(this); }
             catch (Exception ex) { Console.WriteLine("WARNING: AgGrid Disposed handler failure: " + ex.Message); }
 

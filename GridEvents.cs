@@ -14,6 +14,11 @@ namespace AgGrid.Blazor
         /// </summary>
         public Action<CellClickedEvent> CellClicked { set => Set(value); }
         /// <summary>
+        /// portal: 셀 안의 [data-ptl-action] 요소(편집/삭제 아이콘, 링크, 버튼 등)를 클릭했을 때만 (e.Action = 그 값).
+        /// CellClicked 는 모든 셀 클릭마다 서버를 부르지만, 이것은 동작이 있는 요소를 눌렀을 때만 부른다.
+        /// </summary>
+        public Action<CellClickedEvent> CellAction { set => Set(value); }
+        /// <summary>
         /// Row selection is changed. Use the grid API to get the new row selected.
         /// </summary>
         public Action<RowNode[]> SelectionChanged { set => Set(value); }
