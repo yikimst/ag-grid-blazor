@@ -72,6 +72,7 @@ namespace AgGrid.Blazor
         /// </summary>
         public event Action<Grid> Disposed;
         public GridApi Api { get; private set; }
+        public bool IsReady { get; set; }
 
         /// <summary>v31 부터 Column API 는 Grid API 로 통합되었다. 하위호환을 위해 유지.</summary>
         public GridColumnApi ColumnApi { get; private set; }
@@ -215,6 +216,8 @@ namespace AgGrid.Blazor
                     ObserveRowData(RowData);
                     await Api.SetRowData(RowData ?? Enumerable.Empty<object>());
                 }
+                
+                IsReady = true;
                 if (OnGridReady.HasDelegate)
                     await OnGridReady.InvokeAsync(this);
             }
